@@ -22,12 +22,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Focus")]
 [assembly: AssemblyProduct("Kinetik Focus")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 static class Program
 {
-    public const string Version = "1.0.1";
+    public const string Version = "1.0.2";
     // --demo: a made-up session, nothing read from or saved to this PC. "--theme Name" picks its theme.
     // "--shot file.png" draws the demo card into a PNG and quits (for the README screenshots).
     public static bool Demo;
@@ -620,14 +620,39 @@ class FocusForm : Form
         ShowTaskMenu(true);
     }
 
+    bool taskLoading;
     void ShowTaskMenu(bool afterDone)
+    {
+        if (taskLoading) { taskMenu.Show(Cursor.Position); return; }
+        if (Program.Demo)
+        {
+            PopulateTaskMenu(afterDone, "", new List<KeyValuePair<string, List<TaskItem>>>());
+            taskMenu.Show(Cursor.Position); return;
+        }
+        taskLoading = true;
+        foreach (var item in taskMenu.Items.Cast<ToolStripItem>().ToArray()) item.Dispose();
+        taskMenu.Items.Clear();
+        taskMenu.Items.Add(new ToolStripMenuItem("Loading tasks…") { Enabled = false });
+        taskMenu.Show(Cursor.Position);
+        var snapshot = new Settings { TasksFolder = c.TasksFolder, TaskScanLimit = c.TaskScanLimit };
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string dir = "";
+            var notes = new List<KeyValuePair<string, List<TaskItem>>>();
+            try { bool sub; dir = Tasks.Folder(snapshot, out sub); notes = Tasks.Load(snapshot); } catch { }
+            KinetikSuite.Ui.Post(this, () =>
+            {
+                taskLoading = false;
+                if (!taskMenu.IsDisposed && taskMenu.Visible) PopulateTaskMenu(afterDone, dir, notes);
+            });
+        });
+    }
+
+    void PopulateTaskMenu(bool afterDone, string dir, List<KeyValuePair<string, List<TaskItem>>> notes)
     {
         var old = taskMenu.Items.Cast<ToolStripItem>().ToList();
         taskMenu.Items.Clear();
         foreach (var it in old) it.Dispose();
-        bool sub;
-        var dir = Tasks.Folder(c, out sub);
-        var notes = Program.Demo ? new List<KeyValuePair<string, List<TaskItem>>>() : Tasks.Load(c);
         if (afterDone) taskMenu.Items.Add(new ToolStripMenuItem("What's next?") { Enabled = false });
         if (dir == "") taskMenu.Items.Add(new ToolStripMenuItem("No notes folder: set one in Kinetik Notes, or below") { Enabled = false });
         else if (notes.Count == 0) taskMenu.Items.Add(new ToolStripMenuItem("No open tasks in " + Path.GetFileName(dir.TrimEnd('\\'))) { Enabled = false });
@@ -637,7 +662,7 @@ class FocusForm : Form
             foreach (var t in n.Value.Take(30))
             {
                 var task = t;
-                var it = new ToolStripMenuItem(t.Text.Length > 70 ? t.Text.Substring(0, 68) + "…" : t.Text) { Checked = t.Text == c.TaskText && t.File == c.TaskFile };
+                var it = new ToolStripMenuItem(t.Text.Length > 70 ? t.Text.Substring(0, 68) + "…" : t.Text) { Checked = t.Text == c.TaskText && t.File == c.TaskFile && t.Line == c.TaskLine };
                 it.Click += (s, e) => SetTask(task);
                 noteItem.DropDownItems.Add(it);
             }
@@ -651,7 +676,6 @@ class FocusForm : Form
         var folder = new ToolStripMenuItem("Tasks folder…");
         folder.Click += (s, e) => ChooseFolder();
         taskMenu.Items.Add(folder);
-        taskMenu.Show(Cursor.Position);
     }
 
     void ChooseFolder()
