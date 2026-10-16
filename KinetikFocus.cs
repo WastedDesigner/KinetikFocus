@@ -22,12 +22,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Focus")]
 [assembly: AssemblyProduct("Kinetik Focus")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 static class Program
 {
-    public const string Version = "1.0.0";
+    public const string Version = "1.0.1";
     // --demo: a made-up session, nothing read from or saved to this PC. "--theme Name" picks its theme.
     // "--shot file.png" draws the demo card into a PNG and quits (for the README screenshots).
     public static bool Demo;
@@ -52,7 +52,9 @@ static class Program
             ToolStripManager.Renderer = new DarkMenu();
             Backup.KeyName = "KinetikFocus"; Backup.AppTitle = "Kinetik Focus";
             if (!Demo) Backup.OfferRestore();
-            Application.Run(new FocusForm());
+            var app = new FocusForm();
+            using (new KinetikSuite.Shutdown("KinetikFocus" + (Demo ? "Demo" : ""), () => { app.Shutdown(); Application.Exit(); }))
+                Application.Run(app);
         }
         if (!Demo) Backup.AfterExit();
     }
@@ -68,7 +70,8 @@ class Settings
     public int FocusMin = 25, ShortMin = 5, LongMin = 15, LongEvery = 4;
     public bool AutoBreaks = true, AutoFocus, Sound = true, QuietAlerts = true, Hotkey = true;
     public string TasksFolder = "";            // "" = Kinetik Notes' folder
-    public string TaskText = "", TaskFile = ""; // the task being worked on; TaskFile "" for one typed in
+    public string TaskText = "", TaskFile = "", TaskRevision = "";
+    public int TaskScanLimit = 100; // the task being worked on; TaskFile "" for one typed in
     public int TaskLine = -1;                  // where it was in the file, as a hint
     // the timer itself, so it carries on through a restart
     public int Phase = 0;                      // 0 focus, 1 short break, 2 long break
@@ -129,16 +132,18 @@ class Settings
                             else if (f.FieldType == typeof(int)) f.SetValue(s, Convert.ToInt32(v));
                             else f.SetValue(s, Convert.ToInt32(v) != 0);
                         }
-                        catch { }
+                        catch { ok = false; }
                     }
         }
         catch { ok = false; }
-        return s;
+        KinetikSuite.SettingsValidation.Sanitize(s); return s;
     }
 
     public void Save()
     {
         if (Program.Demo || Unreadable) return;
+        KinetikSuite.SettingsValidation.Sanitize(this);
+        if (KinetikSuite.RegistryFiles.CannotSave) return;
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -155,7 +160,7 @@ class Settings
 }
 
 // ======================================================================= Tasks from a folder of Markdown notes (Kinetik Notes' folder)
-class TaskItem { public string Text, File, Note; public int Line; }
+class TaskItem { public string Text, File, Note, Revision; public int Line; }
 
 static class Tasks
 {
@@ -200,13 +205,15 @@ static class Tasks
         var dir = Folder(c, out sub);
         if (dir == "" || !Directory.Exists(dir)) return result;
         IEnumerable<string> files;
-        try { files = Directory.EnumerateFiles(dir, "*.md", sub ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly).Where(f => !f.Substring(dir.Length).Split('\\').Any(p => p.StartsWith("."))).ToList(); }
+        try { files = KinetikSuite.Markdown.Files(dir, sub).ToList(); }
         catch { return result; }
-        foreach (var f in files.OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }).Take(40))
+        foreach (var f in files.OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }).Take(c.TaskScanLimit))
         {
             try
             {
-                var lines = File.ReadAllLines(f);
+                var doc = KinetikSuite.TextDocument.Read(f);
+                var lines = doc.Text.Split('\n');
+                char fence = '\0'; int fenceLength = 0;
                 string title = null;
                 var list = new List<TaskItem>();
                 bool front = lines.Length > 0 && lines[0].Trim() == "---";
@@ -214,12 +221,13 @@ static class Tasks
                 {
                     var l = lines[i];
                     if (front) { if (i > 0 && l.Trim() == "---") { front = false; continue; } var tm = TitleRx.Match(l.Trim()); if (tm.Success) title = tm.Groups[1].Value.Trim().Trim('"', '\''); continue; }
+                    if (KinetikSuite.Markdown.Fence(l, ref fence, ref fenceLength) || fence != '\0') continue;
                     Match m;
                     if (title == null && (m = HeadingRx.Match(l)).Success) title = Clean(m.Groups[1].Value);
                     if ((m = OpenRx.Match(l)).Success)
                     {
                         var t = Clean(m.Groups[1].Value);
-                        if (t != "") list.Add(new TaskItem { Text = t, File = f, Line = i });
+                        if (t != "") list.Add(new TaskItem { Text = t, File = f, Line = i, Revision = doc.Revision });
                     }
                 }
                 if (list.Count == 0) continue;
@@ -234,28 +242,23 @@ static class Tasks
 
     // Ticks the task in its file: "- [ ] …" becomes "- [x] …" on the line (the remembered one, else the first open task
     // with the same text). Everything else in the file is left byte for byte. Returns false if it's no longer there.
-    public static bool Tick(string file, int hint, string text)
+    public static bool Tick(string file, int hint, string text, string revision)
     {
         if (string.IsNullOrEmpty(file) || !File.Exists(file)) return false;
-        var bytes = File.ReadAllBytes(file);
-        bool bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-        var raw = new UTF8Encoding(false).GetString(bytes, bom ? 3 : 0, bytes.Length - (bom ? 3 : 0));
-        var lines = raw.Split('\n');
-        Func<int, bool> isIt = i =>
+        if (string.IsNullOrEmpty(revision)) throw new IOException("Select this task again before editing it.");
+        KinetikSuite.SafeEdit.Update(file, revision, doc =>
         {
-            if (i < 0 || i >= lines.Length) return false;
-            var m = OpenRx.Match(lines[i].TrimEnd('\r'));
-            return m.Success && Clean(m.Groups[1].Value) == text;
-        };
-        int at = isIt(hint) ? hint : Enumerable.Range(0, lines.Length).FirstOrDefault(i => isIt(i));
-        if (!isIt(at)) return false;
-        var mm = AnyRx.Match(lines[at]);
-        lines[at] = mm.Groups[1].Value + "x" + mm.Groups[3].Value;
-        var outText = string.Join("\n", lines);
-        var enc = new UTF8Encoding(bom);
-        File.WriteAllText(file, outText, enc);
+            var lines = doc.Text.Split('\n');
+            if (hint < 0 || hint >= lines.Length) throw new IOException("The task moved. Select it again.");
+            var m = OpenRx.Match(lines[hint].TrimEnd('\r'));
+            if (!m.Success || Clean(m.Groups[1].Value) != text) throw new IOException("The task changed. Select it again.");
+            var match = AnyRx.Match(lines[hint]);
+            lines[hint] = match.Groups[1].Value + "x" + match.Groups[3].Value;
+            return string.Join("\n", lines);
+        });
         return true;
     }
+
 }
 
 // ======================================================================= The log of focus sessions (a CSV anyone can open)
@@ -353,7 +356,7 @@ class FocusForm : Form
     readonly DibSurface surface = new DibSurface();
     readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly ContextMenuStrip menu = new ContextMenuStrip(), taskMenu = new ContextMenuStrip();
+    readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip()), taskMenu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     int layer, winW, winH, margin;
     float u = 1;
     bool dragging, moved;
@@ -395,6 +398,8 @@ class FocusForm : Form
     {
         if (e.Mode == PowerModes.Resume) try { BeginInvoke((Action)OnTick); } catch { }
     }
+
+    public void Shutdown() { c.Save(); Quiet(false); Close(); }
 
     protected override CreateParams CreateParams
     {
@@ -590,6 +595,7 @@ class FocusForm : Form
         c.TaskText = t == null ? "" : t.Text;
         c.TaskFile = t == null ? "" : t.File ?? "";
         c.TaskLine = t == null ? -1 : t.Line;
+        c.TaskRevision = t == null ? "" : t.Revision ?? "";
         c.Save();
         Render();
     }
@@ -600,7 +606,8 @@ class FocusForm : Form
         if (c.TaskFile != "")
         {
             bool ok = false;
-            try { ok = Tasks.Tick(c.TaskFile, c.TaskLine, c.TaskText); } catch { }
+            try { ok = Tasks.Tick(c.TaskFile, c.TaskLine, c.TaskText, c.TaskRevision); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Kinetik Focus"); return; }
             if (!ok)
             {
                 MessageBox.Show("Couldn't find \"" + c.TaskText + "\" as an open task in " + Path.GetFileName(c.TaskFile) + " any more, so nothing was changed.",
@@ -798,7 +805,7 @@ class FocusForm : Form
         return f;
     }
 
-    void DisposeFonts() { foreach (var f in fonts.Values) f.Dispose(); fonts.Clear(); fontKey = null; }
+    void DisposeFonts() { KinetikSuite.Resources.DisposeValues(fonts); fontKey = null; }
 
     static readonly StringFormat fmtL = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
     static readonly StringFormat fmtR = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
@@ -1022,6 +1029,9 @@ class FocusForm : Form
         times.DropDownItems.Add(new ToolStripSeparator());
         times.DropDownItems.Add(Item("Start a new round (clear the dots)", false, () => { c.Cycle = 0; Changed(); }));
         times.DropDownItems.Add(Item("Open the focus log", false, () => { try { if (File.Exists(Log.FilePath)) System.Diagnostics.Process.Start(Log.FilePath); else MessageBox.Show("Nothing logged yet. Sessions are logged to\n" + Log.FilePath, "Kinetik Focus"); } catch { } }));
+        var scan = new ToolStripMenuItem("Task scan limit");
+        foreach (var n in new[] { 100, 1000, 10000 }) { int limit = n; scan.DropDownItems.Add(Item(limit + " notes", c.TaskScanLimit == limit, () => { c.TaskScanLimit = limit; Changed(); })); }
+        times.DropDownItems.Add(scan);
         menu.Items.Add(times);
 
         Common().AddAll(menu.Items);
@@ -1428,22 +1438,8 @@ static class Backup
         }
     }
 
-    static bool Reg(string args)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "reg.exe"), args)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            using (var p = System.Diagnostics.Process.Start(psi))
-            {
-                p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
-                return p.WaitForExit(15000) && p.ExitCode == 0;
-            }
-        }
-        catch { return false; }
-    }
+    static bool Reg(string args) { return KinetikSuite.RegistryFiles.Run(args); }
 
-    // A restore may only write this app's own key, so an edited or swapped file can't change anything else.
     static bool FileIsOurs()
     {
         try
@@ -1462,7 +1458,11 @@ static class Backup
         catch { return false; }
     }
 
-    static bool Import() { return FileIsOurs() && Reg("import \"" + FilePath + "\""); }
+    static bool Import()
+    {
+        try { return FileIsOurs() && KinetikSuite.RegistryFiles.Replace(FilePath, new[] { KeyName }); }
+        catch (Exception ex) { Say(ex.Message, MessageBoxIcon.Warning); return false; }
+    }
 
     static void Say(string text, MessageBoxIcon icon) { MessageBox.Show(text, AppTitle, MessageBoxButtons.OK, icon); }
 
