@@ -1048,7 +1048,7 @@ class FocusForm : Form
         times.DropDownItems.Add(Item("Start breaks by themselves", c.AutoBreaks, () => { c.AutoBreaks = !c.AutoBreaks; Changed(); }));
         times.DropDownItems.Add(Item("Start focus by itself after a break", c.AutoFocus, () => { c.AutoFocus = !c.AutoFocus; Changed(); }));
         times.DropDownItems.Add(Item("Chime when a session ends", c.Sound, () => { c.Sound = !c.Sound; Changed(); }));
-        times.DropDownItems.Add(Item("Hold back Kinetik's alerts while focusing", c.QuietAlerts, () => { c.QuietAlerts = !c.QuietAlerts; Quiet(c.Phase == 0 && Running); Changed(); }));
+        times.DropDownItems.Add(Item("Hold back Kinetik Stats' alerts while focusing", c.QuietAlerts, () => { c.QuietAlerts = !c.QuietAlerts; Quiet(c.Phase == 0 && Running); Changed(); }));
         times.DropDownItems.Add(Item("Ctrl+Alt+F starts and pauses", c.Hotkey, () => { c.Hotkey = !c.Hotkey; SetHotkey(); Changed(); }));
         times.DropDownItems.Add(new ToolStripSeparator());
         times.DropDownItems.Add(Item("Start a new round (clear the dots)", false, () => { c.Cycle = 0; Changed(); }));

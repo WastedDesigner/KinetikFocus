@@ -20,12 +20,12 @@ It's a small portable app with no installer and no account. It's a companion to 
 - **Ring and countdown:** time left, when the session ends, and a dot for each session done in this round
 - **Tasks from your notes:** click the task area to pick any open task (`- [ ] …`) from Kinetik Notes' folder, or another folder of Markdown files, or type one in
 - **Tick it off:** the ✓ button marks the task done in its Markdown file, changing only that line, so Kinetik Notes and Obsidian see it at once
-- **Kinetik stays quiet:** while a session runs, Kinetik (the taskbar bar) holds back its warnings (hot CPU or GPU, high ping, low drive space, low battery). Any that still apply show up after the session.
+- **Kinetik Stats stays quiet:** while a session runs, Kinetik Stats (the taskbar bar) holds back its warnings (hot CPU or GPU, high ping, low drive space, low battery). Any that still apply show up after the session.
 - **A soft chime** and a notification when a session or break ends
 - **Ctrl+Alt+F** starts and pauses from anywhere. Left-clicking the tray icon does the same.
 - **Log:** every session is added to a CSV file (date, start, minutes, task, note), and the widget shows today's total
 - **Keeps going through a restart:** a running timer picks up where it was
-- **Themes** in Kinetik's style, a choice of fonts, size and background opacity; on the desktop, a normal window or always on top
+- **Themes** in the Kinetik apps' style, a choice of fonts, size and background opacity; on the desktop, a normal window or always on top
 - **Settings backup** next to the exe, offered again on a fresh Windows
 
 ## Download and use
@@ -38,7 +38,7 @@ Settings are kept in `HKCU\Software\KinetikFocus`, and the log in `%LOCALAPPDATA
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both. Holding back Kinetik's alerts needs a version of Kinetik newer than 3.1.0.
+Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both. Holding back Kinetik Stats' alerts needs Kinetik Stats newer than 3.1.0.
 
 ## Building from source
 
