@@ -53,6 +53,8 @@ static class Program
             Backup.KeyName = "KinetikFocus"; Backup.AppTitle = "Kinetik Focus";
             if (!Demo) Backup.OfferRestore();
             var app = new FocusForm();
+            // --settings opens the settings window once the app has started.
+            if (args.Contains("--settings")) { EventHandler once = null; once = (s2, e2) => { Application.Idle -= once; app.ShowSettings(); }; Application.Idle += once; }
             using (new KinetikSuite.Shutdown("KinetikFocus" + (Demo ? "Demo" : ""), () => { app.Shutdown(); Application.Exit(); }))
                 Application.Run(app);
         }
@@ -997,12 +999,56 @@ class FocusForm : Form
 
     void Changed() { c.Save(); OnTick(); }
 
+    KinetikSuite.SettingsWindow settings;
+
+    // Settings…: this app's own pages, then the Look, Placement, General and About pages every Kinetik widget shares.
+    public void ShowSettings(string page = null)
+    {
+        if (settings != null && !settings.IsDisposed) { settings.Activate(); if (page != null) settings.ShowPage(page); return; }
+        var pages = new List<KinetikSuite.SettingsWindow.Page>
+        {
+            new KinetikSuite.SettingsWindow.Page { Name = "Timer", Glyph = "timer", Sub = "Session lengths, what happens between them, and your tasks.", Build = b =>
+            {
+                var focus = new[] { 15, 20, 25, 30, 45, 50, 60, 90 }; var shortB = new[] { 3, 5, 10 }; var longB = new[] { 10, 15, 20, 30 }; var after = new[] { 2, 3, 4, 5, 6 };
+                b.Section("Lengths");
+                b.Choice("Focus", null, focus.Select(v => v + " minutes").ToArray(), Array.IndexOf(focus, c.FocusMin), i => SetLength(0, focus[i]), 140);
+                b.Choice("Short break", null, shortB.Select(v => v + " minutes").ToArray(), Array.IndexOf(shortB, c.ShortMin), i => SetLength(1, shortB[i]), 140);
+                b.Choice("Long break", null, longB.Select(v => v + " minutes").ToArray(), Array.IndexOf(longB, c.LongMin), i => SetLength(2, longB[i]), 140);
+                b.Choice("Long break after", null, after.Select(v => v + " sessions").ToArray(), Array.IndexOf(after, c.LongEvery), i => { c.LongEvery = after[i]; c.Cycle = Math.Min(c.Cycle, c.LongEvery); Changed(); }, 140);
+                b.Section("Between sessions");
+                b.Switch("Start breaks by themselves", null, c.AutoBreaks, v => { c.AutoBreaks = v; Changed(); });
+                b.Switch("Start focus by itself after a break", null, c.AutoFocus, v => { c.AutoFocus = v; Changed(); });
+                b.Switch("Chime when a session ends", null, c.Sound, v => { c.Sound = v; Changed(); });
+                b.Switch("Hold back Kinetik Stats' alerts while focusing", "Its hot CPU, ping and battery warnings wait until the break", c.QuietAlerts, v => { c.QuietAlerts = v; Quiet(c.Phase == 0 && Running); Changed(); });
+                b.Switch("Ctrl+Alt+F starts and pauses", null, c.Hotkey, v => { c.Hotkey = v; SetHotkey(); Changed(); });
+                b.Section("Tasks");
+                b.Buttons("Tasks folder", c.TasksFolder == "" ? "Kinetik Notes' folder" : c.TasksFolder,
+                    b.Button("Choose…", () =>
+                    {
+                        using (var dlg = new FolderBrowserDialog { Description = "Choose a folder of Markdown notes with tasks", SelectedPath = Directory.Exists(c.TasksFolder) ? c.TasksFolder : "" })
+                            if (dlg.ShowDialog() == DialogResult.OK) { c.TasksFolder = dlg.SelectedPath; Changed(); b.Refresh(); }
+                    }),
+                    b.Button("Use Notes'", () => { c.TasksFolder = ""; Changed(); b.Refresh(); }));
+                var limits = new[] { 100, 1000, 10000 };
+                b.Choice("Task scan limit", "How many notes to look through for tasks", limits.Select(v => v + " notes").ToArray(), Array.IndexOf(limits, c.TaskScanLimit), i => { c.TaskScanLimit = limits[i]; Changed(); }, 140);
+                b.Section("Log");
+                b.Buttons("Sessions", "The dots count focus sessions since the last long break",
+                    b.Button("New round", () => { c.Cycle = 0; Changed(); }),
+                    b.Button("Open the log", () => { try { if (File.Exists(Log.FilePath)) System.Diagnostics.Process.Start(Log.FilePath); else MessageBox.Show("Nothing logged yet. Sessions are logged to\n" + Log.FilePath, "Kinetik Focus"); } catch { } }));
+            } },
+        };
+        pages.AddRange(Common().ForSettings().Pages());
+        settings = new KinetikSuite.SettingsWindow("Kinetik Focus", Program.Version, pages, page);
+        settings.Show();
+    }
+
     // The look, placement, startup and backup options, shared word for word with the other Kinetik apps.
     CommonMenu Common()
     {
         return new CommonMenu
         {
             Title = "Kinetik Focus", Version = Program.Version,
+            OpenSettings = () => ShowSettings(),
             OpenTheme = () =>
             {
                 if (picker != null && !picker.IsDisposed) { picker.Activate(); return; }
@@ -1660,6 +1706,21 @@ class CommonMenu
         items.Add(new ToolStripSeparator());
         items.Add(new ToolStripMenuItem(Title + " " + Version) { Enabled = false });
         if (Exit != null) items.Add(Item("Exit", false, Exit));
+    }
+
+    // The same options as the shared pages of a settings window (Look, Placement, General, About).
+    public KinetikSuite.SettingsWindow.Common ForSettings()
+    {
+        return new KinetikSuite.SettingsWindow.Common
+        {
+            Title = Title, Version = Version, OpenTheme = OpenTheme,
+            Scale = Scale, SetScale = SetScale, Scales = Scales, Widths = Widths, CardWidth = CardWidth, SetCardWidth = SetCardWidth,
+            FontName = FontName, SetFontName = SetFontName, Fonts = Fonts.Where(HasFont).ToArray(),
+            Opacity = Opacity, SetOpacity = SetOpacity, Opacities = Opacities,
+            Layer = Layer, SetLayer = SetLayer, Locked = Locked, SetLocked = SetLocked, LockText = LockText,
+            ClickThrough = ClickThrough, SetClickThrough = SetClickThrough, Snap = Snap, SetSnap = SetSnap,
+            RunAtStartup = RunAtStartup, SetRunAtStartup = SetRunAtStartup, BackUp = BackUp, Restore = Restore, LastBackup = LastBackup,
+        };
     }
 
     public void AddAll(ToolStripItemCollection items) { AddLook(items); AddEnd(items); }
